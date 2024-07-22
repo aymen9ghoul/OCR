@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>pdf2text-ocr</title>
+    <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.6.172/build/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script type="module">
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.6.172/build/pdf.worker.js";
+
+      const languages = [
+        { name: "English", code: "eng" },
+        { name: "French", code: "fra" },
+        { name: "French, Middle (ca. 1400-1600)", code: "frm" },
+      ];
+
+      let language = localStorage.getItem("language") ?? "eng";
+      let extractedTexts = []; // Store texts of each page
+
+      const readFile = (file) => {
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.addEventListener("loadend", (event) =>
+            resolve(new Uint8Array(event.target.result))
+          );
+          reader.readAsArrayBuffer(file);
+        });
+      };
+
+      const convertToImage = async (pdf) => {
+        const container = document.getElementById("container");
+        const images = [];
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+          const page = await pdf.getPage(pageNumber);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement("canvas");
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          container.appendChild(canvas);
+          await page.render({
+            canvasContext: canvas.getContext("2d"),
+            viewport: viewport,
+          }).promise;
+          images.push(canvas.toDataURL("image/png"));
+        }
+        return images;
+      };
+
+      const convertToText = async (images) => {
+        const worker = await Tesseract.createWorker();
+        await worker.loadLanguage(language);
+        await worker.initialize(language);
+
+        const container = document.getElementById("container");
+        for (const image of images) {
+          const {
+            data: { text },
+          } = await worker.recognize(image);
+          extractedTexts.push(text); // Accumulate the text for each page
+          const section = document.createElement("section");
+          const pre = document.createElement("pre");
+          pre.appendChild(document.createTextNode(text));
+          section.appendChild(pre);
+          container.appendChild(section);
+        }
+
+        await worker.terminate();
+      };
+
+      const loadFile = async (file) =>
+        pdfjsLib.getDocument({ data: file }).promise;
+
+      const convertFile = async (file) => {
+        showLoading();
+        const pdf = await loadFile(file);
+        const images = await convertToImage(pdf);
+        await convertToText(images);
+        hideLoading();
+      };
+
+      const showLoading = () =>
+        (document.getElementById("loading").style.display = "block");
+
+      const hideLoading = () =>
+        (document.getElementById("loading").style.display = "none");
+
+      const showError = (error) =>
+        document
+          .getElementById("error")
+          .appendChild(document.createTextNode(`Error: ${error.message}`));
+
+      const clearResults = () => {
+        extractedTexts = [];
+        ["container", "loading", "error"].forEach((id) => {
+          let element = document.getElementById(id);
+          element.remove();
+          element = document.createElement("div");
+          element.id = id;
+          if (id === "loading") {
+            element.appendChild(document.createTextNode("Loading..."));
+          }
+          document.body.appendChild(element);
+        });
+      };
+
+      const downloadPDF = () => {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        const pageHeight = doc.internal.pageSize.height;
+        const marginTop = 10;
+        const marginBottom = 10;
+        const lineHeight = 10;
+        const maxLinesPerPage = Math.floor((pageHeight - marginTop - marginBottom) / lineHeight);
+
+        extractedTexts.forEach((text, index) => {
+          const lines = doc.splitTextToSize(text, 180);
+          let linesLeft = lines.length;
+
+          for (let i = 0; i < lines.length; i += maxLinesPerPage) {
+            if (index !== 0 || i !== 0) {
+              doc.addPage();
+            }
+            doc.text(lines.slice(i, i + maxLinesPerPage), 10, 10);
+            linesLeft -= maxLinesPerPage;
+          }
+        });
+
+        doc.save('extracted_text.pdf');
+      };
+
+      const languageSelect = document.getElementById("language-select");
+      languages.forEach((lang) => {
+        const option = document.createElement("option");
+        option.appendChild(document.createTextNode(lang.name));
+        option.value = lang.code;
+        languageSelect.appendChild(option);
+      });
+
+      languageSelect.value = language;
+      languageSelect.addEventListener("change", (event) => {
+        language = event.target.value;
+        localStorage.setItem("language", language);
+      });
+
+      const fileInput = document.getElementById("file-input");
+      fileInput.addEventListener("change", async () => {
+        clearResults();
+        try {
+          await convertFile(await readFile(fileInput.files[0]));
+        } catch (error) {
+          hideLoading();
+          showError(error);
+        }
+      });
+
+      const downloadButton = document.getElementById("download-button");
+      downloadButton.addEventListener("click", downloadPDF);
+    </script>
+  </head>
+
+  <body>
+    <h1>pdf2text-ocr</h1>
+    <p>
+      <a href="https://racosa.github.io/pdf2text-ocr/">pdf2text-ocr</a> is a
+      simple tool for converting PDF to text using OCR. Files are converted
+      locally in the browser and are never uploaded to external servers.
+    </p>
+    <div id="input-container">
+      <p>Select the language and a file:</p>
+      <div>
+        <select name="languages" id="language-select"></select>
+      </div>
+      <div>
+        <label id="file-input-label" for="file-input">Select a file</label
+        ><br />
+        <input type="file" id="file-input" name="file-input" multiple />
+      </div>
+      <button id="download-button">Download as PDF</button>
+    </div>
+    <div id="container"></div>
+    <div id="loading">Loading...</div>
+    <div id="error"></div>
+  </body>
+
+  <style>
+    body {
+      color: #212121;
+      font-family: Arial, sans-serif;
+      scroll-behavior: smooth;
+      font-size: 1.15rem;
+      line-height: 1.5;
+      max-width: 850px;
+      margin: auto;
+      padding-top: 1rem;
+    }
+
+    a {
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    select {
+      font-size: 1.15rem;
+      font-family: inherit;
+      line-height: inherit;
+      padding-left: 1rem;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    select,
+    #file-input-label {
+      padding: 0.5em;
+      border: thin solid rgb(209, 125, 125);
+      border-radius: 3px;
+      cursor: pointer;
+      background-color: #bb0c0c;
+      color: white;
+    }
+
+    #input-container {
+      margin-top: 2rem;
+    }
+
+    #input-container div {
+      display: inline-block;
+      margin-right: 1rem;
+    }
+
+    button {
+      padding: 0.5em 1em;
+      font-size: 1.15rem;
+      font-family: inherit;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      background-color: #bb0c0c;
+      color: white;
+    }
+
+    #loading,
+    #error {
+      margin-top: 2rem;
+      margin-bottom: 3rem;
+    }
+
+    #loading {
+      display: none;
+    }
+
+    section {
+      border-top: 1px solid #898ea4;
+      border-bottom: 1px solid #898ea4;
+      padding: 2rem 1rem;
+      margin: 3rem 0;
+    }
+
+    section + section,
+    section:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    pre {
+      font-family: Arial, sans-serif;
+      margin: 0;
+    }
+
+    canvas {
+      display: none;
+    }
+  </style>
+</html>
